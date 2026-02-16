@@ -2,90 +2,114 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-# Sayfa Ayarları (Tam ekran ve Türkçe başlık)
-st.set_page_config(page_title="Borsa İzleme Paneli", layout="wide")
+# Sayfa Genişlik Ayarı
+st.set_page_config(page_title="Borsa Portföy Yöneticisi", layout="wide")
 
-# --- ⚙️ VERİ ÇEKME FONKSİYONLARI ---
-# Sayfa her açıldığında butona basmadan çalışması için doğrudan çağırıyoruz
-@st.cache_data(ttl=600) # Verileri 10 dakikada bir günceller, bilgisayarı yormaz
-def verileri_getir(hisse_listesi):
-    sonuclar = []
-    for hisse in hisse_listesi:
-        h = yf.Ticker(hisse)
-        d = h.history(period="2d")
-        if len(d) > 1:
-            guncel = d['Close'].iloc[-1]
-            onceki = d['Close'].iloc[-2]
-            degisim = ((guncel - onceki) / onceki) * 100
-            sonuclar.append({"Hisse": hisse, "Fiyat": guncel, "Değişim": degisim})
-    return pd.DataFrame(sonuclar)
+# --- 💾 VERİ SAKLAMA ÜNİTESİ (Session State) ---
+# Sayfa yenilense bile verilerin kaybolmaması için bir hafıza alanı oluşturuyoruz
+if "cuzdan" not in st.session_state:
+    st.session_state.cuzdan = [] # Başlangıçta cüzdan boş
 
-# --- 🏠 PORTFÖYÜN (Burayı dilediğin gibi güncelle) ---
-# Format: "Hisse Kodu": [Adet, Alış Maliyeti]
-benim_cüzdanım = {
-    "THYAO.IS": [100, 275.50],
-    "ASELS.IS": [500, 48.20],
-    "TUPRS.IS": [40, 162.00],
-    "EREGL.IS": [250, 41.80],
-    "SASA.IS": [1000, 38.50]
-}
-
-# --- ⬅️ BANA GÖRE SOL: MENÜ SÜTUNU ---
+# --- ⬅️ BANA GÖRE SOL: YÖNETİM VE EKLEME ÜNİTESİ ---
 with st.sidebar:
-    st.header("📌 Menü")
-    sayfa_secimi = st.radio(
-        "Gitmek istediğiniz alan:",
-        ["💰 Cüzdanım", "📊 Teknik Analiz", "⚙️ Ayarlar"]
-    )
+    st.header("⚙️ Portföy Yönetimi")
+    
+    # 1. Sayfa Seçimi
+    sayfa = st.radio("İşlem Seçin:", ["💰 Cüzdanım", "📉 Grafik Analiz"])
     st.write("---")
-    st.caption("Veriler 13 Şubat 2026 Midas teknik raporu ve canlı borsa verileriyle harmanlanmıştır.")
+    
+    # 2. VERİ EKLEME ÜNİTESİ
+    st.subheader("➕ Yeni Hisse Ekle")
+    yeni_hisse = st.text_input("Hisse Kodu (Örn: THYAO.IS):").upper()
+    yeni_adet = st.number_input("Adet:", min_value=0, value=0, step=1)
+    yeni_maliyet = st.number_input("Alış Maliyeti (TL):", min_value=0.0, value=0.0, step=0.1)
+    
+    if st.button("Portföye Ekle"):
+        if yeni_hisse and yeni_adet > 0:
+            # Listeye ekle
+            st.session_state.cuzdan.append({
+                "Hisse": yeni_hisse,
+                "Adet": yeni_adet,
+                "Maliyet": yeni_maliyet
+            })
+            st.success(f"{yeni_hisse} başarıyla eklendi!")
+        else:
+            st.error("Lütfen tüm alanları doğru doldurun.")
 
-# --- 🏗️ ANA EKRAN DÜZENİ (ORTA VE SAĞ) ---
-# Orta alan %75, Sağ alan %25 yer kaplayacak şekilde bölüyoruz
+    st.write("---")
+    if st.button("🗑️ Cüzdanı Sıfırla"):
+        st.session_state.cuzdan = []
+        st.rerun()
+
+# --- 🏗️ ANA EKRAN DÜZENİ ---
 orta_sutun, sag_sutun = st.columns([3, 1])
 
-# --- 🏛️ ORTA BÖLÜM: İŞLEM ALANI ---
+# --- 🏛️ ORTA BÖLÜM: İŞLEM VE GÖSTERİM ALANI ---
 with orta_sutun:
-    if sayfa_secimi == "💰 Cüzdanım":
-        st.header("💰 Gerçek Zamanlı Portföy Durumum")
+    if sayfa == "💰 Cüzdanım":
+        st.header("📋 Portföyümün Güncel Durumu")
         
-        tablo_verisi = []
-        toplam_deger = 0
-        
-        # Cüzdandaki hisseleri canlı hesapla
-        for hisse, bilgi in benim_cüzdanım.items():
-            h = yf.Ticker(hisse)
-            guncel_fiyat = h.history(period="1d")['Close'].iloc[-1]
-            adet, maliyet = bilgi[0], bilgi[1]
-            anlik_deger = adet * guncel_fiyat
-            toplam_deger += anlik_deger
-            kar_zarar = anlik_deger - (adet * maliyet)
+        if len(st.session_state.cuzdan) == 0:
+            st.info("Cüzdanınız şu an boş. Sol menüden hisse ekleyerek başlayabilirsiniz.")
+        else:
+            tablo_listesi = []
+            toplam_maliyet_genel = 0
+            toplam_deger_genel = 0
             
-            tablo_verisi.append({
-                "Hisse": hisse,
-                "Adet": adet,
-                "Maliyet": f"{maliyet:.2f} TL",
-                "Güncel": f"{guncel_fiyat:.2f} TL",
-                "Durum": f"{kar_zarar:,.2f} TL"
-            })
-        
-        st.metric("Toplam Cüzdan Değeri", f"{toplam_deger:,.2f} TL")
-        st.table(pd.DataFrame(tablo_verisi))
+            for kalem in st.session_state.cuzdan:
+                with st.spinner(f"{kalem['Hisse']} verisi alınıyor..."):
+                    h = yf.Ticker(kalem['Hisse'])
+                    guncel = h.history(period="1d")['Close'].iloc[-1]
+                    
+                    t_maliyet = kalem['Adet'] * kalem['Maliyet']
+                    t_deger = kalem['Adet'] * guncel
+                    k_z = t_deger - t_maliyet
+                    
+                    toplam_maliyet_genel += t_maliyet
+                    toplam_deger_genel += t_deger
+                    
+                    tablo_listesi.append({
+                        "Hisse": kalem['Hisse'],
+                        "Adet": kalem['Adet'],
+                        "Maliyet": f"{kalem['Maliyet']:.2f} TL",
+                        "Güncel": f"{guncel:.2f} TL",
+                        "Kâr/Zarar": f"{k_z:,.2f} TL",
+                        "Değişim %": f"%{((guncel - kalem['Maliyet']) / kalem['Maliyet'] * 100):.2f}"
+                    })
+            
+            # Özet Kartları
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Toplam Maliyet", f"{toplam_maliyet_genel:,.2f} TL")
+            c2.metric("Güncel Değer", f"{toplam_deger_genel:,.2f} TL")
+            c3.metric("Net Durum", f"{(toplam_deger_genel - toplam_maliyet_genel):,.2f} TL")
+            
+            # Detaylı Tablo
+            st.table(pd.DataFrame(tablo_listesi))
 
-    elif sayfa_secimi == "📊 Teknik Analiz":
-        st.header("📈 Hisse Grafikleri")
-        secilen = st.selectbox("Grafiğini görmek istediğiniz hisse:", list(benim_cüzdanım.keys()))
-        grafik_verisi = yf.Ticker(secilen).history(period="1mo")
-        st.line_chart(grafik_verisi['Close'])
+    elif sayfa == "📉 Grafik Analiz":
+        st.header("📊 Teknik Görünüm")
+        if len(st.session_state.cuzdan) > 0:
+            secilen = st.selectbox("İncelemek istediğiniz hisse:", [x['Hisse'] for x in st.session_state.cuzdan])
+            grafik_verisi = yf.Ticker(secilen).history(period="1mo")
+            st.line_chart(grafik_verisi['Close'])
+        else:
+            st.warning("Grafik görmek için önce cüzdana hisse eklemelisiniz.")
 
-# --- 🚀 BANA GÖRE SAĞ: EN ÇOK YÜKSELENLER ---
+# --- 🚀 BANA GÖRE SAĞ: EN ÇOK YÜKSELENLER (BIST 30 Örneği) ---
 with sag_sutun:
-    st.subheader("🔥 Günün Yıldızları")
-    # Takip listesindeki en çok yükselenleri bulalım
-    piyasa_verisi = verileri_getir(["AKSEN.IS", "KCHOL.IS", "BIMAS.IS", "SISE.IS", "PGSUS.IS", "EKGYO.IS"])
-    if not piyasa_verisi.empty:
-        yukselenler = piyasa_verisi.sort_values(by="Değişim", ascending=False).head(10)
-        for _, row in yukselenler.iterrows():
-            st.write(f"**{row['Hisse']}**")
-            st.write(f"{row['Fiyat']:.2f} TL | %{row['Değişim']:.2f}")
+    st.subheader("🔥 BIST Trend")
+    # Takip edilecek popüler hisseler
+    populer = ["THYAO.IS", "ASELS.IS", "TUPRS.IS", "EREGL.IS", "KCHOL.IS", "BIMAS.IS"]
+    
+    for p_hisse in populer:
+        ph = yf.Ticker(p_hisse)
+        p_d = ph.history(period="2d")
+        if len(p_d) > 1:
+            anlik = p_d['Close'].iloc[-1]
+            onceki = p_d['Close'].iloc[-2]
+            yuzde = ((anlik - onceki) / onceki) * 100
+            
+            st.write(f"**{p_hisse.split('.')[0]}**")
+            color = "green" if yuzde >= 0 else "red"
+            st.markdown(f"{anlik:.2f} TL | <span style='color:{color}'>%{yuzde:.2f}</span>", unsafe_allow_html=True)
             st.write("---")
