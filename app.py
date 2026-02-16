@@ -1,98 +1,79 @@
+import streamlit as st
 import yfinance as yf
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-import sqlite3
 import pandas as pd
 
-app = FastAPI()
+# Sayfa Genişliği ve Başlık
+st.set_page_config(page_title="Cüzdanım", layout="centered")
 
-# VERİTABANI: Hem Nakit hem Hisse senedi tutacak şekilde güncellendi
-def init_db():
-    conn = sqlite3.connect('cuzdan.db')
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS varliklar 
-                      (id INTEGER PRIMARY KEY, isim TEXT, miktar REAL, tip TEXT, ticker TEXT)''')
-    # İlk başta nakit bakiyeni tanımlayalım (id=1 her zaman Nakit olsun)
-    cursor.execute("INSERT OR IGNORE INTO varliklar (id, isim, miktar, tip) VALUES (1, 'Nakit Bakiye', 0, 'Nakit')")
-    conn.commit()
-    conn.close()
-
-# 1. BORSA VERİSİ ÇEKME FONKSİYONU
-def get_bist_price(ticker):
-    try:
-        # BIST hisseleri için sonuna .IS ekliyoruz (örn: THYAO.IS)
-        hisse = yf.Ticker(f"{ticker.upper()}.IS")
-        fiyat = hisse.history(period="1d")['Close'].iloc[-1]
-        return round(fiyat, 2)
-    except:
-        return 0
-
-# 2. ŞİRKET LİSTESİ (Dropdown için en popülerleri ekledim, listeyi genişletebilirsin)
-BIST_COMPANIES = {
-    "THYAO": "Türk Hava Yolları", "EREGL": "Erdemir Demir Çelik",
-    "ASELS": "Aselsan", "AKBNK": "Akbank", "SISE": "Şişecam",
-    "KOCHL": "Koç Holding", "TUPRS": "Tüpraş", "BIMAS": "BİM Mağazalar",
-    "SASAS": "Sasa Polyester", "HEKTS": "Hektaş", "ISCTR": "İş Bankası (C)"
+# --- 1. ŞİRKET LİSTESİ (Açılır Liste İçin) ---
+# Buraya istediğin şirketleri ekle
+BIST_SIRKETLERI = {
+    "THYAO": "Türk Hava Yolları", "EREGL": "Erdemir", "ASELS": "Aselsan",
+    "AKBNK": "Akbank", "SISE": "Şişecam", "TUPRS": "Tüpraş",
+    "BIMAS": "BİM Mağazalar", "SASAS": "Sasa Polyester", "HEKTS": "Hektaş"
 }
 
-# 3. ANA ARAYÜZ (Dropdown ve Cüzdan Görünümü)
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    conn = sqlite3.connect('cuzdan.db')
-    df = pd.read_sql_query("SELECT * FROM varliklar", conn)
-    conn.close()
+# --- 2. CÜZDAN VERİLERİ (Session State - Uygulama Açıkken Veriyi Tutar) ---
+if 'nakit' not in st.session_state:
+    st.session_state.nakit = 0.0
+if 'hisseler' not in st.session_state:
+    st.session_state.hisseler = {}
 
-    nakit = df[df['tip'] == 'Nakit']['miktar'].iloc[0]
-    hisseler_html = ""
-    toplam_hisse_degeri = 0
+# --- 3. ANA EKRAN TASARIMI ---
+st.title("📱 Kişisel Cüzdan Paneli")
 
-    for _, row in df[df['tip'] == 'Hisse'].iterrows():
-        fiyat = get_bist_price(row['ticker'])
-        deger = fiyat * row['miktar']
-        toplam_hisse_degeri += deger
-        hisseler_html += f"<li>{row['isim']} ({row['ticker']}): {row['miktar']} Adet | Fiyat: {fiyat} TL | Toplam: {round(deger, 2)} TL</li>"
+# NAKİT BÖLÜMÜ
+st.subheader("Banka Bakiyesi")
+col1, col2 = st.columns([2, 1])
+yeni_nakit = col1.number_input("Güncel Nakit Bakiyeni Gir (TL)", value=st.session_state.nakit)
+if col2.button("Bakiyeyi Güncelle"):
+    st.session_state.nakit = yeni_nakit
+    st.success("Bakiye Kaydedildi!")
 
-    # Dropdown (Açılır Liste) oluşturma
-    options = "".join([f'<option value="{k}">{v} ({k})</option>' for k, v in BIST_COMPANIES.items()])
+st.divider()
 
-    return f"""
-    <html>
-        <head><title>Kişisel Cüzdan</title></head>
-        <body style="font-family: sans-serif; padding: 20px;">
-            <h1>Cüzdan Özeti</h1>
-            <h2 style="color: green;">Net Varlık: {round(nakit + toplam_hisse_degeri, 2)} TL</h2>
-            <p>Nakit Bakiyesi: <b>{nakit} TL</b></p>
-            <h3>Hisselerim:</h3>
-            <ul>{hisseler_html}</ul>
-            <hr>
-            <h3>Hisse Ekle (Dropdown Listeden Seç)</h3>
-            <form action="/hisse-ekle" method="get">
-                <select name="ticker">{options}</select>
-                <input type="number" name="adet" placeholder="Adet" step="0.01">
-                <button type="submit">Ekle</button>
-            </form>
-        </body>
-    </html>
-    """
+# BORSA / HİSSE EKLEME (Senin İstediğin Dropdown)
+st.subheader("Portföye Hisse Ekle")
+secilen_hisse = st.selectbox("Şirket Seçin", options=list(BIST_SIRKETLERI.keys()), 
+                             format_func=lambda x: f"{BIST_SIRKETLERI[x]} ({x})")
+adet = st.number_input("Adet", min_value=0.0, step=1.0)
 
-# 4. HİSSE EKLEME ENDPOINT'İ
-@app.get("/hisse-ekle")
-def add_stock(ticker: str, adet: float):
-    isim = BIST_COMPANIES.get(ticker, ticker)
-    conn = sqlite3.connect('cuzdan.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO varliklar (isim, miktar, tip, ticker) VALUES (?, ?, 'Hisse', ?)", (isim, adet, ticker))
-    conn.commit()
-    conn.close()
-    return {"status": "success", "message": f"{ticker} portföye eklendi."}
+if st.button("Hisseleri Portföye Ekle"):
+    st.session_state.hisseler[secilen_hisse] = adet
+    st.success(f"{secilen_hisse} portföye eklendi.")
 
-# 5. BANKA BİLDİRİMİ İŞLEME (Önceki Adımdaki gibi çalışır)
-@app.post("/bildirim-isle")
-async def process_notif(request: Request):
-    # ... (Önceki kodun aynısı buraya gelecek, nakit bakiyeyi güncelleyecek)
-    pass
+st.divider()
 
-if __name__ == "__main__":
-    init_db()
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# --- 4. HESAPLAMA VE ÖZET ---
+st.subheader("Varlıklarımın Durumu")
+
+if st.session_state.hisseler:
+    veriler = []
+    toplam_borsa_tl = 0
+    
+    for ticker, miktar in st.session_state.hisseler.items():
+        if miktar > 0:
+            # BIST verisini yfinance ile çek
+            hisse_data = yf.Ticker(f"{ticker}.IS")
+            son_fiyat = hisse_data.history(period="1d")['Close'].iloc[-1]
+            toplam_deger = son_fiyat * miktar
+            toplam_borsa_tl += toplam_deger
+            
+            veriler.append({
+                "Hisse": ticker,
+                "Adet": miktar,
+                "Fiyat": f"{son_fiyat:.2f} TL",
+                "Toplam": f"{toplam_deger:,.2f} TL"
+            })
+    
+    if veriler:
+        st.table(pd.DataFrame(veriler))
+        
+        # Göstergeler (Metrikler)
+        m1, m2 = st.columns(2)
+        m1.metric("Toplam Nakit", f"{st.session_state.nakit:,.2f} TL")
+        m2.metric("Toplam Borsa", f"{toplam_borsa_tl:,.2f} TL")
+        
+        st.info(f"💰 **Genel Toplam Varlık: {st.session_state.nakit + toplam_borsa_tl:,.2f} TL**")
+else:
+    st.write("Henüz hisse eklenmedi.")
