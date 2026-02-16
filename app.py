@@ -1,115 +1,98 @@
-import streamlit as st
 import yfinance as yf
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+import sqlite3
 import pandas as pd
 
-# Sayfa Genişlik Ayarı
-st.set_page_config(page_title="Borsa Portföy Yöneticisi", layout="wide")
+app = FastAPI()
 
-# --- 💾 VERİ SAKLAMA ÜNİTESİ (Session State) ---
-# Sayfa yenilense bile verilerin kaybolmaması için bir hafıza alanı oluşturuyoruz
-if "cuzdan" not in st.session_state:
-    st.session_state.cuzdan = [] # Başlangıçta cüzdan boş
+# VERİTABANI: Hem Nakit hem Hisse senedi tutacak şekilde güncellendi
+def init_db():
+    conn = sqlite3.connect('cuzdan.db')
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS varliklar 
+                      (id INTEGER PRIMARY KEY, isim TEXT, miktar REAL, tip TEXT, ticker TEXT)''')
+    # İlk başta nakit bakiyeni tanımlayalım (id=1 her zaman Nakit olsun)
+    cursor.execute("INSERT OR IGNORE INTO varliklar (id, isim, miktar, tip) VALUES (1, 'Nakit Bakiye', 0, 'Nakit')")
+    conn.commit()
+    conn.close()
 
-# --- ⬅️ BANA GÖRE SOL: YÖNETİM VE EKLEME ÜNİTESİ ---
-with st.sidebar:
-    st.header("⚙️ Portföy Yönetimi")
-    
-    # 1. Sayfa Seçimi
-    sayfa = st.radio("İşlem Seçin:", ["💰 Cüzdanım", "📉 Grafik Analiz"])
-    st.write("---")
-    
-    # 2. VERİ EKLEME ÜNİTESİ
-    st.subheader("➕ Yeni Hisse Ekle")
-    yeni_hisse = st.text_input("Hisse Kodu (Örn: THYAO.IS):").upper()
-    yeni_adet = st.number_input("Adet:", min_value=0, value=0, step=1)
-    yeni_maliyet = st.number_input("Alış Maliyeti (TL):", min_value=0.0, value=0.0, step=0.1)
-    
-    if st.button("Portföye Ekle"):
-        if yeni_hisse and yeni_adet > 0:
-            # Listeye ekle
-            st.session_state.cuzdan.append({
-                "Hisse": yeni_hisse,
-                "Adet": yeni_adet,
-                "Maliyet": yeni_maliyet
-            })
-            st.success(f"{yeni_hisse} başarıyla eklendi!")
-        else:
-            st.error("Lütfen tüm alanları doğru doldurun.")
+# 1. BORSA VERİSİ ÇEKME FONKSİYONU
+def get_bist_price(ticker):
+    try:
+        # BIST hisseleri için sonuna .IS ekliyoruz (örn: THYAO.IS)
+        hisse = yf.Ticker(f"{ticker.upper()}.IS")
+        fiyat = hisse.history(period="1d")['Close'].iloc[-1]
+        return round(fiyat, 2)
+    except:
+        return 0
 
-    st.write("---")
-    if st.button("🗑️ Cüzdanı Sıfırla"):
-        st.session_state.cuzdan = []
-        st.rerun()
+# 2. ŞİRKET LİSTESİ (Dropdown için en popülerleri ekledim, listeyi genişletebilirsin)
+BIST_COMPANIES = {
+    "THYAO": "Türk Hava Yolları", "EREGL": "Erdemir Demir Çelik",
+    "ASELS": "Aselsan", "AKBNK": "Akbank", "SISE": "Şişecam",
+    "KOCHL": "Koç Holding", "TUPRS": "Tüpraş", "BIMAS": "BİM Mağazalar",
+    "SASAS": "Sasa Polyester", "HEKTS": "Hektaş", "ISCTR": "İş Bankası (C)"
+}
 
-# --- 🏗️ ANA EKRAN DÜZENİ ---
-orta_sutun, sag_sutun = st.columns([3, 1])
+# 3. ANA ARAYÜZ (Dropdown ve Cüzdan Görünümü)
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    conn = sqlite3.connect('cuzdan.db')
+    df = pd.read_sql_query("SELECT * FROM varliklar", conn)
+    conn.close()
 
-# --- 🏛️ ORTA BÖLÜM: İŞLEM VE GÖSTERİM ALANI ---
-with orta_sutun:
-    if sayfa == "💰 Cüzdanım":
-        st.header("📋 Portföyümün Güncel Durumu")
-        
-        if len(st.session_state.cuzdan) == 0:
-            st.info("Cüzdanınız şu an boş. Sol menüden hisse ekleyerek başlayabilirsiniz.")
-        else:
-            tablo_listesi = []
-            toplam_maliyet_genel = 0
-            toplam_deger_genel = 0
-            
-            for kalem in st.session_state.cuzdan:
-                with st.spinner(f"{kalem['Hisse']} verisi alınıyor..."):
-                    h = yf.Ticker(kalem['Hisse'])
-                    guncel = h.history(period="1d")['Close'].iloc[-1]
-                    
-                    t_maliyet = kalem['Adet'] * kalem['Maliyet']
-                    t_deger = kalem['Adet'] * guncel
-                    k_z = t_deger - t_maliyet
-                    
-                    toplam_maliyet_genel += t_maliyet
-                    toplam_deger_genel += t_deger
-                    
-                    tablo_listesi.append({
-                        "Hisse": kalem['Hisse'],
-                        "Adet": kalem['Adet'],
-                        "Maliyet": f"{kalem['Maliyet']:.2f} TL",
-                        "Güncel": f"{guncel:.2f} TL",
-                        "Kâr/Zarar": f"{k_z:,.2f} TL",
-                        "Değişim %": f"%{((guncel - kalem['Maliyet']) / kalem['Maliyet'] * 100):.2f}"
-                    })
-            
-            # Özet Kartları
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Toplam Maliyet", f"{toplam_maliyet_genel:,.2f} TL")
-            c2.metric("Güncel Değer", f"{toplam_deger_genel:,.2f} TL")
-            c3.metric("Net Durum", f"{(toplam_deger_genel - toplam_maliyet_genel):,.2f} TL")
-            
-            # Detaylı Tablo
-            st.table(pd.DataFrame(tablo_listesi))
+    nakit = df[df['tip'] == 'Nakit']['miktar'].iloc[0]
+    hisseler_html = ""
+    toplam_hisse_degeri = 0
 
-    elif sayfa == "📉 Grafik Analiz":
-        st.header("📊 Teknik Görünüm")
-        if len(st.session_state.cuzdan) > 0:
-            secilen = st.selectbox("İncelemek istediğiniz hisse:", [x['Hisse'] for x in st.session_state.cuzdan])
-            grafik_verisi = yf.Ticker(secilen).history(period="1mo")
-            st.line_chart(grafik_verisi['Close'])
-        else:
-            st.warning("Grafik görmek için önce cüzdana hisse eklemelisiniz.")
+    for _, row in df[df['tip'] == 'Hisse'].iterrows():
+        fiyat = get_bist_price(row['ticker'])
+        deger = fiyat * row['miktar']
+        toplam_hisse_degeri += deger
+        hisseler_html += f"<li>{row['isim']} ({row['ticker']}): {row['miktar']} Adet | Fiyat: {fiyat} TL | Toplam: {round(deger, 2)} TL</li>"
 
-# --- 🚀 BANA GÖRE SAĞ: EN ÇOK YÜKSELENLER (BIST 30 Örneği) ---
-with sag_sutun:
-    st.subheader("🔥 BIST Trend")
-    # Takip edilecek popüler hisseler
-    populer = ["THYAO.IS", "ASELS.IS", "TUPRS.IS", "EREGL.IS", "KCHOL.IS", "BIMAS.IS"]
-    
-    for p_hisse in populer:
-        ph = yf.Ticker(p_hisse)
-        p_d = ph.history(period="2d")
-        if len(p_d) > 1:
-            anlik = p_d['Close'].iloc[-1]
-            onceki = p_d['Close'].iloc[-2]
-            yuzde = ((anlik - onceki) / onceki) * 100
-            
-            st.write(f"**{p_hisse.split('.')[0]}**")
-            color = "green" if yuzde >= 0 else "red"
-            st.markdown(f"{anlik:.2f} TL | <span style='color:{color}'>%{yuzde:.2f}</span>", unsafe_allow_html=True)
-            st.write("---")
+    # Dropdown (Açılır Liste) oluşturma
+    options = "".join([f'<option value="{k}">{v} ({k})</option>' for k, v in BIST_COMPANIES.items()])
+
+    return f"""
+    <html>
+        <head><title>Kişisel Cüzdan</title></head>
+        <body style="font-family: sans-serif; padding: 20px;">
+            <h1>Cüzdan Özeti</h1>
+            <h2 style="color: green;">Net Varlık: {round(nakit + toplam_hisse_degeri, 2)} TL</h2>
+            <p>Nakit Bakiyesi: <b>{nakit} TL</b></p>
+            <h3>Hisselerim:</h3>
+            <ul>{hisseler_html}</ul>
+            <hr>
+            <h3>Hisse Ekle (Dropdown Listeden Seç)</h3>
+            <form action="/hisse-ekle" method="get">
+                <select name="ticker">{options}</select>
+                <input type="number" name="adet" placeholder="Adet" step="0.01">
+                <button type="submit">Ekle</button>
+            </form>
+        </body>
+    </html>
+    """
+
+# 4. HİSSE EKLEME ENDPOINT'İ
+@app.get("/hisse-ekle")
+def add_stock(ticker: str, adet: float):
+    isim = BIST_COMPANIES.get(ticker, ticker)
+    conn = sqlite3.connect('cuzdan.db')
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO varliklar (isim, miktar, tip, ticker) VALUES (?, ?, 'Hisse', ?)", (isim, adet, ticker))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": f"{ticker} portföye eklendi."}
+
+# 5. BANKA BİLDİRİMİ İŞLEME (Önceki Adımdaki gibi çalışır)
+@app.post("/bildirim-isle")
+async def process_notif(request: Request):
+    # ... (Önceki kodun aynısı buraya gelecek, nakit bakiyeyi güncelleyecek)
+    pass
+
+if __name__ == "__main__":
+    init_db()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
